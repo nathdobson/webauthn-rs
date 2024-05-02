@@ -246,6 +246,7 @@ pub struct WebauthnBuilder<'a> {
     timeout: Duration,
     algorithms: Vec<COSEAlgorithm>,
     user_presence_only_security_keys: bool,
+    user_presence_only_passkeys: bool,
 }
 
 impl<'a> WebauthnBuilder<'a> {
@@ -302,6 +303,7 @@ impl<'a> WebauthnBuilder<'a> {
                 timeout: DEFAULT_AUTHENTICATOR_TIMEOUT,
                 algorithms: COSEAlgorithm::secure_algs(),
                 user_presence_only_security_keys: false,
+                user_presence_only_passkeys: false,
             })
         } else {
             error!("rp_id is not an effective_domain of rp_origin");
@@ -383,6 +385,13 @@ impl<'a> WebauthnBuilder<'a> {
         self
     }
 
+    /// Enable passkeys to only require user presence, rather than enforcing their
+    /// user-verification state.
+    pub fn set_user_presence_only_passkeys(mut self, enable: bool) -> Self {
+        self.user_presence_only_passkeys = enable;
+        self
+    }
+
     /// Complete the construction of the [Webauthn] instance. If an invalid configuration setting
     /// is found, an Error will be returned.
     ///
@@ -411,6 +420,7 @@ impl<'a> WebauthnBuilder<'a> {
             ),
             algorithms: self.algorithms,
             user_presence_only_security_keys: self.user_presence_only_security_keys,
+            user_presence_only_passkeys: self.user_presence_only_passkeys,
         })
     }
 }
@@ -457,6 +467,7 @@ pub struct Webauthn {
     core: WebauthnCore,
     algorithms: Vec<COSEAlgorithm>,
     user_presence_only_security_keys: bool,
+    user_presence_only_passkeys: bool,
 }
 
 impl Webauthn {
@@ -540,7 +551,7 @@ impl Webauthn {
         exclude_credentials: Option<Vec<CredentialID>>,
     ) -> WebauthnResult<(CreationChallengeResponse, PasskeyRegistration)> {
         let extensions = Some(RequestRegistrationExtensions {
-            cred_protect: Some(CredProtect {
+            cred_protect: (!self.user_presence_only_passkeys).then_some(CredProtect {
                 // Since this may contain PII, we want to enforce this. We also
                 // want the device to strictly enforce its UV state.
                 credential_protection_policy: CredentialProtectionPolicy::UserVerificationRequired,
@@ -555,6 +566,12 @@ impl Webauthn {
             hmac_create_secret: None,
         });
 
+        let policy = if self.user_presence_only_passkeys {
+            UserVerificationPolicy::Discouraged_DO_NOT_USE
+        } else {
+            UserVerificationPolicy::Required
+        };
+
         let builder = self
             .core
             .new_challenge_register_builder(
@@ -566,7 +583,7 @@ impl Webauthn {
             .credential_algorithms(self.algorithms.clone())
             .require_resident_key(false)
             .authenticator_attachment(None)
-            .user_verification_policy(UserVerificationPolicy::Required)
+            .user_verification_policy(policy)
             .reject_synchronised_authenticators(false)
             .exclude_credentials(exclude_credentials)
             .hints(None)
@@ -678,7 +695,11 @@ impl Webauthn {
     ) -> WebauthnResult<(RequestChallengeResponse, PasskeyAuthentication)> {
         let extensions = None;
         let creds = creds.iter().map(|sk| sk.cred.clone()).collect();
-        let policy = Some(UserVerificationPolicy::Required);
+        let policy = Some(if self.user_presence_only_passkeys {
+            UserVerificationPolicy::Discouraged_DO_NOT_USE
+        } else {
+            UserVerificationPolicy::Required
+        });
         let allow_backup_eligible_upgrade = true;
         let hints = None;
 
